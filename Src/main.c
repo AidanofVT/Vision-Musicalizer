@@ -33,9 +33,20 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 typedef struct {
+	int waveType;
 	float frequency;
+	float cyclesPerSample;
 	double phase;
-} sineWave;
+} wave;
+
+typedef struct {
+	int complexity;
+	wave waves[10];
+	int volume;
+	int startTime;
+	int duration;
+	float ampRamp;
+} sound;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -46,8 +57,11 @@ typedef struct {
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define bitDepth 16
-#define sigLength 1920
+#define sigLength 1024
 #define DAC_ADDRESS (0x94)
+#define sine_t 1
+#define noise_t 2
+#define triangle_t 3
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -76,25 +90,27 @@ void MX_USB_HOST_Process(void);
 
 /* USER CODE BEGIN PFP */
 bool DAC_reset (void);
-void advanceSine (sineWave *inQuestion);
-int16_t sineValue (sineWave inQuestion);
-void topUp (int startAt, int endAt);
+void advanceSine (wave *inQuestion);
+int16_t sineValue (wave inQuestion);
+void sampleValue (int startAt, int endAt);
 void DebugCheckpoint ();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 int numberRangePerSign = pow(2, bitDepth - 1) - 1;
-uint32_t sampleRate = AUDIO_FREQUENCY_48K;
-int16_t audioBufferA[sigLength];
-int16_t audioBufferB[sigLength];
-sineWave* sineWaves;
+uint32_t sampleRate = AUDIO_FREQUENCY_22K;
+wave* sineWaves;
 int sineListSize;
-sineWave hundredPerSample = {366.211, 0.0f};
-sineWave wave1 = {300, 0.0f};
-sineWave wave3 = {600, 0.0f};
-int16_t sig[sigLength];
-
+//sineWave hundredPerSample = {366.211, 0.0f};
+wave wave1 = {sine_t, 200};
+wave wave2 = {sine_t, 400};
+wave wave3 = {noise_t, 500};
+wave wave4 = {sine_t, 500};
+wave wave5 = {sine_t, 500};
+wave wave6 = {sine_t, 500};
+int16_t __attribute__((aligned(4))) sig[sigLength];
+unsigned long sampleCount = 0;
 bool orderFlag = true;
 /* USER CODE END 0 */
 
@@ -107,11 +123,17 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 	sineListSize = 3;
-	sineWaves = malloc(sizeof(sineWave) * sineListSize);
+	sineWaves = malloc(sizeof(wave) * sineListSize);
 	sineWaves[0] = wave1;
-	sineWaves[1] = wave3;
-	sineWaves[2] = hundredPerSample;
-//	sineWaves[2] = wave3;
+	sineWaves[1] = wave2;
+	sineWaves[2] = wave3;
+//	sineWaves[3] = wave4;
+//	sineWaves[4] = wave5;
+//	sineWaves[5] = wave6;
+	for (int i = 0; i < sineListSize; ++i) {
+		sineWaves[i].cyclesPerSample = sineWaves[i].frequency / sampleRate;
+	}
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -144,9 +166,9 @@ int main(void)
   cs43l22_Init(DAC_ADDRESS, OUTPUT_DEVICE_AUTO, 85, sampleRate);
   cs43l22_SetVolume(DAC_ADDRESS, 60);
   cs43l22_Play(DAC_ADDRESS, (uint16_t*) sig, sigLength);
-  topUp(0, sigLength-1);
+  sampleValue(0, sigLength-1);
   HAL_I2S_Transmit_DMA(&hi2s3, (uint16_t*) sig, sigLength);
-  int i = 0;
+//  int i = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -155,13 +177,13 @@ int main(void)
     /* USER CODE END WHILE */
     MX_USB_HOST_Process();
     /* USER CODE BEGIN 3 */
-	i = ((rand() % sigLength) / 2) * 2;
-    if (sig[2 * (i / 2)] != sig[1 + (2 * (i / 2))]) {
-    	DebugCheckpoint();
-	}
-    if (abs(sig[i]) > numberRangePerSign / 10 * sineListSize) {
-    	DebugCheckpoint();
-    }
+//	i = ((rand() % sigLength) / 2) * 2;
+//    if (sig[2 * (i / 2)] != sig[1 + (2 * (i / 2))]) {
+//    	DebugCheckpoint();
+//	}
+//    if (abs(sig[i]) > numberRangePerSign / 10 * sineListSize) {
+//    	DebugCheckpoint();
+//    }
 //    //This test is only for single triangle waves:
 //    if (numberRangePerSign - abs(sig[0]) > 100 && numberRangePerSign - abs(sig[sigLength / 2]) > 100) {
 //    	// Note that these two conditions could cause things near peaks to be missed.
@@ -308,7 +330,11 @@ static void MX_I2S3_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN I2S3_Init 2 */
-
+  hi2s3.Init.AudioFreq = sampleRate;
+  if (HAL_I2S_Init(&hi2s3) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END I2S3_Init 2 */
 
 }
@@ -486,61 +512,72 @@ bool DAC_reset (void) {
 	return true;
 }
 
-void advanceSine (sineWave *inQuestion) {
-	float cyclesPerSample = 1.0f / (sampleRate / inQuestion->frequency);
-	inQuestion->phase += cyclesPerSample * (M_PI * 2);
+void advanceSine (wave *inQuestion) {
+//	inQuestion->phase = fmod(sampleCount * inQuestion->cyclesPerSample * (M_PI * 2), M_PI * 2);
+	inQuestion->phase += inQuestion->cyclesPerSample * (M_PI * 2);
 	inQuestion->phase = fmod(inQuestion->phase, M_PI * 2);
 }
 
-void advanceTriangle (sineWave *inQuestion) {
-	float cyclesPerSample = 1.0f / (sampleRate / inQuestion->frequency);
-	inQuestion->phase += cyclesPerSample;
+void advanceTriangle (wave *inQuestion) {
+	inQuestion->phase += inQuestion->cyclesPerSample;
 	inQuestion->phase = fmod(inQuestion->phase, 1.0f);
 }
 
-int16_t sineValue (sineWave inQuestion) {
-	return sin(inQuestion.phase) * numberRangePerSign;
+int16_t sineValue (wave inQuestion) {
+	return sinf(inQuestion.phase) * numberRangePerSign;
 }
 
-int16_t triangleValue (sineWave inQuestion) {
+int16_t triangleValue (wave inQuestion) {
 	float a = fabs(inQuestion.phase - 0.5);
 	float b = a - 0.25;
 	int16_t c = b * numberRangePerSign * 4;
 	return c;
 }
 
-void topUp (int startAt, int endAt) {
-	if (endAt > sigLength || startAt < 0) {
-		Error_Handler();
+int16_t waveSampleValue (wave inQuestion) {
+	switch (inQuestion.waveType) {
+		case sine_t:
+			return sinf(inQuestion.phase) * numberRangePerSign;
+			break;
+		case noise_t:
+			return (rand() % (int)(numberRangePerSign * 0.1)) - numberRangePerSign * 0.05f;
+			break;
+		case triangle_t:
+			return (fabs(inQuestion.phase - 0.5) - 0.25) * numberRangePerSign * 4;
+			break;
 	}
-	for (int i = startAt; i < endAt; i += 2) {
+	return 0;
+}
+
+void sampleValue (int startAt, int endAt) {
+	for (int i = startAt; i <= endAt; i += 2) {
 		sig[i] = 0;
-		for (int sineListIndex = 0; sineListIndex < sineListSize; sineListIndex++) {
-			advanceTriangle(&sineWaves[sineListIndex]);
-			sig[i] += triangleValue(sineWaves[sineListIndex]) / 10;
-//			advanceSine(&sineWaves[sineListIndex]);
-//			sig[i] += sineValue(sineWaves[sineListIndex]) / 10;
-//			sig[i] += (rand() % (numberRangePerSign / 100) - numberRangePerSign / 200);
+		for (int soundListIndex = 0; soundListIndex < sineListSize; soundListIndex++) {
+			advanceSine(&sineWaves[soundListIndex]);
+			sig[i] += waveSampleValue(sineWaves[soundListIndex]) * 0.1;
 		}
 		sig[i + 1] = sig[i];
-//		if (i > 1 && abs(abs(sig[i] - sig[i - 1]) - 100) > 1) {
 	}
 }
 
 void BSP_AUDIO_OUT_TransferComplete_CallBack(void) {
-	if (orderFlag == true) {
-		DebugCheckpoint();
+	if (orderFlag == false) {
+		HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, 1);
+		HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13, 0);
+		sampleValue(sigLength / 2, sigLength - 1);
+	    __DMB();
+		orderFlag = true;
 	}
-	topUp(sigLength / 2, sigLength - 1);
-	orderFlag = true;
 }
 
 void BSP_AUDIO_OUT_HalfTransfer_CallBack(void) {
-	if (orderFlag == false) {
-		DebugCheckpoint();
+	if (orderFlag == true) {
+		HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12, 0);
+		HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13, 1);
+		sampleValue(0, sigLength / 2 - 1);
+	    __DMB();
+		orderFlag = false;
 	}
-	topUp(0, sigLength / 2 - 1);
-	orderFlag = false;
 }
 
 void DebugCheckpoint () {
